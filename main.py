@@ -27,6 +27,8 @@ def expect(c, pattern, timeout=0.1):
         return result+1
     except pexpect.TIMEOUT:
         return False
+    except pexpect.TIMEOUT:
+        raise KeyboardInterrupt
 
 command = ['crawl']
 
@@ -36,7 +38,6 @@ options = dict(name=random_name(),
                )
 
 extra_options = dict(
-                auto_drop_chunks="yes",
                 auto_eat_chunks="true",
                 # autopickup_exceptions=">skeleton",
                 char_set='unicode',
@@ -136,7 +137,8 @@ while True:
                       "You are too injured to fight blindly",
                       "You have reached level",
                       "Increase .*trength",
-                      "You die...",
+                      "You die",
+                      "Failed to move towards target",
                       ]
             result = expect(child, checks)
             if result is 1:
@@ -155,8 +157,12 @@ while True:
                 child.send("s") # Strength
                 continue
             elif result is 5:
-                # Died. :(
+                info("Died. :(")
                 raise KeyboardInterrupt
+            elif result is 6:
+                info("Can't get to it, so try to explore.")
+                state = explorin
+                continue
             else:
                 info('MOAR ENEMIES FIGHT ON')
                 state = fightin # Set it just in case
@@ -168,54 +174,70 @@ while True:
             # Find all the items
             info("Searching for everything.")
             child.sendcontrol("f")
-            if expect(child, ".*Search for what"):
+            checks = ["Search for what",
+                      "A.* is nearby",
+                      "A.* comes into view",
+                      "There are monsters nearby",
+                      ]
+            result = expect(child, checks)
+            if result is 1:
+                # Search for everything
                 child.send(".")
                 child.sendcontrol('m')
-            elif expect(child, ".*A .* is nearby"):
+
+                findchecks = ["Can't find anything matching that",
+                              ".*stacks by dist.*",
+                              ]
+                findresult = expect(child, findchecks)
+                if findresult is 1:
+                    info("No more loot. Going back to exploring.")
+                    state = explorin
+                    continue
+                elif findresult is 2:
+                    info("Found some loot!")
+                    child.send("a")
+                    info("Walk to the first item, or back out if we have all of them.")
+                    child.sendcontrol('m')
+                    lootchecks = ["You see here",
+                                  "Infinite lua loop detected",
+                                  ".*don't know how to get there.*",
+                                  ]
+                    lootresult = expect(child, lootchecks)
+                    if lootresult in (2, 3):
+                        if lootresult is 3:
+                            info("Couldn't get there.")
+                        elif lootresult is 2:
+                            info("Got stuck in an infinite lua loop.")
+                        state = explorin
+                        continue
+                    else:
+                        # Didn't find the item, so we probably got stuck on the map.
+                        info("Maybe stuck in the map.")
+                        child.sendcontrol('m')
+                        child.sendcontrol('m')
+                        reset()
+
+                info("No monsters, so go ahead and pick it up")
+                child.send(",")
+                pickupchecks = [".*stacks by dist.*",
+                                "Pick up a.*",
+                                "There are no items here.",
+                                "There are several objects here",
+                                ]
+                pickupresult = expect(child, pickupchecks)
+                if pickupresult in (1, 2, 4):
+                    info("Multiple things, so grab them all.")
+                    child.send("a")
+                elif pickupresult is 3:
+                    info("Got hung up on a trap, bailing.")
+                    state = explorin
+                    continue
+            elif result is (2, 3, 4):
                 info("Found a monster, so don't loot right now.")
                 state = fightin
                 continue
             else:
                 info("Search prompt never showed.")
-
-            if expect(child, ".*Can't find anything matching that"):
-                info("No more loot. Going back to exploring.")
-                state = explorin
-                continue
-
-            if expect(child, ".*stacks by dist.*"):
-                info("Found some loot!")
-                child.send("a")
-                info("Walk to the first item, or back out if we have all of them.")
-                child.sendcontrol('m')
-                if not expect(child, "You see here"):
-                    # Didn't find the item, so we probably got stuck on the map.
-                    child.sendcontrol('m')
-                    child.sendcontrol('m')
-                    child.sendcontrol(']')
-                    child.sendcontrol(']')
-                    child.sendcontrol(']')
-                if expect(child, "Infinite lua loop detected"):
-                    state = explorin
-                    continue
-                if expect(child, ".*don't know how to get there.*"):
-                    info("Couldn't get there.")
-                    state = explorin
-                    continue
-
-            if expect(child, [".*A .* comes into view", "There are monsters nearby"]):
-                info("OSHIT A MONSTER")
-                state = fightin
-                continue
-
-            info("No monsters, so go ahead and pick it up")
-            child.send(",")
-            if expect(child, [".*stacks by dist.*", ".*Pick up a.*"]):
-                info("Multiple things, so grab the topmost.")
-                child.send("a")
-            if expect(child, "There are no items here."):
-                info("Got hung up on a trap, bailing.")
-                state = explorin
                 continue
 
         if state is explorin:
@@ -226,6 +248,7 @@ while True:
                       "A.* comes into view",
                       "A.* is nearby",
                       "There are monsters nearby",
+                      "You need to eat something",
                       ]
 
             # Before wandering off, rest until fully healed.
@@ -234,7 +257,6 @@ while True:
             result = expect(child, checks)
             if result is 1:
                 info("Partly explored the map. Resetting and trying again.")
-                child.sendcontrol('c') # Clear the level map
                 child.send("X")
                 child.sendcontrol('e') # Erase any travel exclusions.
                 child.sendcontrol('f') # Forget level map
@@ -250,6 +272,9 @@ while True:
             elif result in (3, 4, 5):
                 info("Too many monsters to wander around like this!")
                 state = fightin
+                continue
+            elif result is 6:
+                info("Starving to death.")
                 continue
 
     except KeyboardInterrupt:
