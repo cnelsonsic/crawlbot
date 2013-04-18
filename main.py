@@ -36,19 +36,25 @@ options = dict(name=random_name(),
                )
 
 extra_options = dict(
-                weapon="'short sword'",
+                auto_drop_chunks="yes",
+                auto_eat_chunks="true",
+                # autopickup_exceptions=">skeleton",
+                char_set='unicode',
                 clean_map="true",
-                view_max_width="64",
-                view_max_height="64",
-                view_lock="true",
+                confirm_butcher="never",
+                easy_eat_chunks="true",
+                easy_eat_gourmand="true",
                 explore_delay="-1",
                 explore_greedy="true",
-                confirm_butcher="never",
-                travel_delay="-1",
-                char_set='unicode',
+                note_all_skill_levels="true",
                 show_more='false',
                 show_newturn_mark='false',
                 trapwalk_safe_hp="'dart:15, needle:25, spear:50'",
+                travel_delay="-1",
+                view_lock="true",
+                view_max_height="64",
+                view_max_width="64",
+                weapon="'short sword'",
                )
 
 for option, value in options.iteritems():
@@ -58,61 +64,105 @@ for option, value in extra_options.iteritems():
     command.append('-extra-opt-last '+option+'='+value)
 
 command = ' '.join(command)
+info(("-"*30)+" New Game "+("-"*30))
 info(command)
 child = pexpect.spawn(command)
 child.logfile = sys.stdout
 
 child.expect(".*Welcome, .* the .*")
 
-fightin = True
-explorin = True
-lootin = True
+def redraw():
+    os.system("clear") # idk
+    child.sendcontrol("r")
+
+def reset():
+    '''Reset the input back to a known state.'''
+    # Clear any commands that got half-baked.
+    count = 0
+    while True:
+        if expect(child, "Unknown command"):
+            # Back to the top
+            break
+        else:
+            count += 1
+            info("Trying to clear commands.")
+            child.send(chr(27)) # Escape
+            if count > 10:
+                # Hung up on that damn stat pick line
+                child.send("s")
+
+def note(message):
+    # Add a note
+    child.send(":"+message)
+    child.sendcontrol('m')
+
+
+fightin = "fightin"
+explorin = "explorin"
+lootin = "lootin"
+
+state = fightin
 while True:
     try:
-        os.system("clear") # idk
-        child.sendcontrol("r")
+        # Make sure we redraw the display.
+        redraw()
 
-        # Clear any commands that got half-baked.
-        while True:
-            if expect(child, "Unknown command"):
-                # Back to the top
-                break
-            else:
-                info("Trying to clear commands.")
-                child.send(chr(27)) # Escape
+        # Reset our input back to a known state.
+        reset()
 
         # TODO: Check if we've spent too much time here, (1400-117*depth)
 
-        if fightin:
-            info("FIGHTIN")
+        # Check for hunger
+        # Drop all corpses
+        # Butcher all corpses
+        # Pick up everything: ,a
+        # Starving, Near Starving, Very Hungry
+        # ey
+        # If we see "Comestables", bail until we get some more chunks.
+
+        # Check for burden
+        # Drop useless crap
+
+        # If have more than 3 of one scroll,
+        # And we don't know what identify scrolls are yet,
+        # It's probably identify, so use it on the most interesting
+        # items in our inventory.
+
+        info(state.upper())
+        if state is fightin:
             # HOLY CRAP ENEMIES
             child.sendcontrol("i") # Tab
-            lootin = False
-            explorin = False
-            if expect(child, "No target in view"):
-                info('No more targets, go back to lootin.')
-                fightin = False
-                lootin = True
+            checks = ["No target in view",
+                      "You are too injured to fight blindly",
+                      "You have reached level",
+                      "Increase .*trength",
+                      "You die...",
+                      ]
+            result = expect(child, checks)
+            if result is 1:
+                info("No more targets, go back to lootin'.")
+                state = lootin
                 continue
-            elif expect(child, "You are too injured to fight blindly"):
+            elif result is 2:
                 info("Holy crap, we got the tar beaten out of us.")
                 # Wait it out. Fuq da police.
                 # TODO: Probably shouldn't wait it out.
                 child.send("s")
                 continue
-            elif expect(child, "You have reached level"):
-                if expect(child, "Increase .*trength"):
-                    child.send("s") # Strength
-                    continue
+            elif result is 3:
+                info("Gained a level!")
+            elif result is 4:
+                child.send("s") # Strength
+                continue
+            elif result is 5:
+                # Died. :(
+                raise KeyboardInterrupt
             else:
                 info('MOAR ENEMIES FIGHT ON')
-                fightin = True
-                lootin = False
-                explorin = False
+                state = fightin # Set it just in case
                 continue
 
-        if lootin:
-            info("LOOTIN")
+        if state is lootin:
             # Coast is clear, look for loot
 
             # Find all the items
@@ -123,16 +173,14 @@ while True:
                 child.sendcontrol('m')
             elif expect(child, ".*A .* is nearby"):
                 info("Found a monster, so don't loot right now.")
-                fightin = True
-                lootin = False
+                state = fightin
                 continue
             else:
                 info("Search prompt never showed.")
 
             if expect(child, ".*Can't find anything matching that"):
-                lootin = False
-                explorin = True
                 info("No more loot. Going back to exploring.")
+                state = explorin
                 continue
 
             if expect(child, ".*stacks by dist.*"):
@@ -148,20 +196,16 @@ while True:
                     child.sendcontrol(']')
                     child.sendcontrol(']')
                 if expect(child, "Infinite lua loop detected"):
-                    lootin = False
-                    explorin = True
+                    state = explorin
                     continue
                 if expect(child, ".*don't know how to get there.*"):
                     info("Couldn't get there.")
-                    explorin = True
-                    lootin = False
+                    state = explorin
                     continue
 
             if expect(child, [".*A .* comes into view", "There are monsters nearby"]):
-                fightin = True
-                lootin = False
-                explorin = False
                 info("OSHIT A MONSTER")
+                state = fightin
                 continue
 
             info("No monsters, so go ahead and pick it up")
@@ -171,44 +215,43 @@ while True:
                 child.send("a")
             if expect(child, "There are no items here."):
                 info("Got hung up on a trap, bailing.")
-                explorin = True
-                lootin = False
+                state = explorin
                 continue
 
-        if explorin:
-            info("EXPLORIN")
+        if state is explorin:
             # Got all the loot, resume wandering.
-            while True:
-                child.send("o")
-                checks = ["Partly explored", "Done exploring"]
-                checks += ["A .* comes into view", "A.* is nearby", "There are monsters nearby"]
-                result = expect(child, checks)
-                if result == 1:
-                    info("Partly explored the map. Resetting and trying again.")
-                    child.sendcontrol('c')
-                    child.send("X")
-                    child.sendcontrol('e') # Erase any travel exclusions.
-                    child.sendcontrol('f')
-                    child.send("y")
-                    child.sendcontrol(']')
-                    break
-                elif result == 2:
-                    info("Done exploring. Heading downstairs.")
 
-                    # Add a note
-                    child.send(":Done exploring level.")
-                    child.sendcontrol('m')
+            checks = ["Partly explored",
+                      "Done exploring",
+                      "A.* comes into view",
+                      "A.* is nearby",
+                      "There are monsters nearby",
+                      ]
 
-                    # Head downstairs.
-                    # Go, Dungeon, Down
-                    child.send("GD>")
-                    child.sendcontrol('m')
-                    break
-                elif result > 2:
-                    info("Too many monsters to wander around like this!")
-                    fightin = True
-                    lootin = True
-                    break
-        # time.sleep(3)
+            # Before wandering off, rest until fully healed.
+
+            child.send("o")
+            result = expect(child, checks)
+            if result is 1:
+                info("Partly explored the map. Resetting and trying again.")
+                child.sendcontrol('c') # Clear the level map
+                child.send("X")
+                child.sendcontrol('e') # Erase any travel exclusions.
+                child.sendcontrol('f') # Forget level map
+                child.send("y") # Yes, I'm sure.
+                reset()
+                continue
+            elif result is 2:
+                info("Done exploring. Heading downstairs.")
+
+                child.send("GD$>") # Go, Dungeon, Last Visited, Down
+                child.sendcontrol('m')
+                continue
+            elif result in (3, 4, 5):
+                info("Too many monsters to wander around like this!")
+                state = fightin
+                continue
+
     except KeyboardInterrupt:
+        # Interactive mode if ctrl+c. ctrl+] to give back control.
         child.interact()
