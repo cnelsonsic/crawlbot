@@ -6,6 +6,8 @@ import string
 import time
 import pexpect
 
+from functools import partial
+
 import logging
 LOGGER = logging.getLogger('crawlbot')
 hdlr = logging.FileHandler('crawlbot.log')
@@ -28,7 +30,7 @@ def expect(c, pattern, timeout=0.1):
     except pexpect.TIMEOUT:
         return False
     except pexpect.TIMEOUT:
-        raise KeyboardInterrupt
+        raise Exception("Timeout")
 
 command = ['crawl']
 
@@ -39,19 +41,24 @@ options = dict(name=random_name(),
 
 extra_options = dict(
                 auto_eat_chunks="true",
-                # autopickup_exceptions=">skeleton",
+                autofight_throw="true",
+                autopickup_exceptions=">skeleton",
+                autopickup_no_burden="false",
                 char_set='unicode',
                 clean_map="true",
+                # clear_messages="true",
                 confirm_butcher="never",
                 easy_eat_chunks="true",
                 easy_eat_gourmand="true",
                 explore_delay="-1",
                 explore_greedy="true",
                 note_all_skill_levels="true",
+                runrest_ignore_monster=".*:3",
                 show_more='false',
                 show_newturn_mark='false',
                 trapwalk_safe_hp="'dart:15, needle:25, spear:50'",
                 travel_delay="-1",
+                travel_key_stop="false",
                 view_lock="true",
                 view_max_height="64",
                 view_max_width="64",
@@ -95,12 +102,16 @@ def reset():
 def note(message):
     # Add a note
     child.send(":"+message)
-    child.sendcontrol('m')
+    enter()
 
 
 fightin = "fightin"
 explorin = "explorin"
 lootin = "lootin"
+dumpin = "dumpin"
+
+enter = partial(child.sendcontrol, "m")
+tab = partial(child.sendcontrol, "i")
 
 state = fightin
 while True:
@@ -113,26 +124,54 @@ while True:
 
         # TODO: Check if we've spent too much time here, (1400-117*depth)
 
-        # Check for hunger
-        # Drop all corpses
-        # Butcher all corpses
-        # Pick up everything: ,a
-        # Starving, Near Starving, Very Hungry
-        # ey
-        # If we see "Comestables", bail until we get some more chunks.
-
-        # Check for burden
-        # Drop useless crap
-
-        # If have more than 3 of one scroll,
-        # And we don't know what identify scrolls are yet,
-        # It's probably identify, so use it on the most interesting
-        # items in our inventory.
-
         info(state.upper())
-        if state is fightin:
+
+        if state is dumpin:
+            # Check for burden
+            # Drop useless crap
+
+            # Drop all corpses: d&(enter)
+            child.send("d&")
+            enter()
+            reset()
+
+            # Butcher all corpses: c until "There isn't anything to butcher here"
+            while not expect(child, ["There isn't anything to butcher here",
+                                     "There isn't anything here",
+                                     ]):
+                info("Butchering corpse.")
+                child.send("c")
+
+            # Check for hunger
+            redraw()
+            result = expect(child, ["Starving", "Hungry"])
+            if result:
+                # Starving, Near Starving, Very Hungry, Hungry
+                child.send('e')
+                foodresult = expect(child, "Comestables")
+                if expect(child, "Comestables"):
+                    if result is 1:
+                        # Starving, so eat our permafood.
+                        # It should still be on the floor.
+                        pass
+                else:
+                    child.send('y')
+
+            # Gather any food items laying around.
+            child.send(",m%")
+            enter()
+
+            # If have more than 3 of one scroll,
+            # And we don't know what identify scrolls are yet,
+            # It's probably identify, so use it on the most interesting
+            # items in our inventory.
+
+            # No more inventory business, so go back to exploring.
+            state = explorin
+
+        elif state is fightin:
             # HOLY CRAP ENEMIES
-            child.sendcontrol("i") # Tab
+            tab() # Tab
             checks = ["No target in view",
                       "You are too injured to fight blindly",
                       "You have reached level",
@@ -160,7 +199,10 @@ while True:
                 info("Died. :(")
                 raise KeyboardInterrupt
             elif result is 6:
-                info("Can't get to it, so try to explore.")
+                info("Can't get to it, so walk up to a .")
+                # Override autoexplore, don't stop travel if there are monsters!
+                child.send("X<")
+                enter()
                 state = explorin
                 continue
             else:
@@ -168,7 +210,7 @@ while True:
                 state = fightin # Set it just in case
                 continue
 
-        if state is lootin:
+        elif state is lootin:
             # Coast is clear, look for loot
 
             # Find all the items
@@ -181,23 +223,23 @@ while True:
                       ]
             result = expect(child, checks)
             if result is 1:
-                # Search for everything
-                child.send(".")
-                child.sendcontrol('m')
+                # Search for everything, except skeletons.
+                child.send(". !!skeleton")
+                enter()
 
                 findchecks = ["Can't find anything matching that",
                               ".*stacks by dist.*",
                               ]
                 findresult = expect(child, findchecks)
                 if findresult is 1:
-                    info("No more loot. Going back to exploring.")
-                    state = explorin
+                    info("No more loot. Clearing out the backpack.")
+                    state = dumpin
                     continue
                 elif findresult is 2:
                     info("Found some loot!")
                     child.send("a")
-                    info("Walk to the first item, or back out if we have all of them.")
-                    child.sendcontrol('m')
+                    info("Try to walk there.")
+                    enter()
                     lootchecks = ["You see here",
                                   "Infinite lua loop detected",
                                   ".*don't know how to get there.*",
@@ -213,8 +255,8 @@ while True:
                     else:
                         # Didn't find the item, so we probably got stuck on the map.
                         info("Maybe stuck in the map.")
-                        child.sendcontrol('m')
-                        child.sendcontrol('m')
+                        enter()
+                        enter()
                         reset()
 
                 info("No monsters, so go ahead and pick it up")
@@ -240,7 +282,7 @@ while True:
                 info("Search prompt never showed.")
                 continue
 
-        if state is explorin:
+        elif state is explorin:
             # Got all the loot, resume wandering.
 
             checks = ["Partly explored",
@@ -267,7 +309,7 @@ while True:
                 info("Done exploring. Heading downstairs.")
 
                 child.send("GD$>") # Go, Dungeon, Last Visited, Down
-                child.sendcontrol('m')
+                enter()
                 continue
             elif result in (3, 4, 5):
                 info("Too many monsters to wander around like this!")
@@ -275,8 +317,9 @@ while True:
                 continue
             elif result is 6:
                 info("Starving to death.")
+                state = dumpin
                 continue
 
-    except KeyboardInterrupt:
+    except KeyboardInterrupt, Exception:
         # Interactive mode if ctrl+c. ctrl+] to give back control.
         child.interact()
