@@ -29,8 +29,8 @@ def expect(c, pattern, timeout=0.1):
         return result+1
     except pexpect.TIMEOUT:
         return False
-    except pexpect.TIMEOUT:
-        raise Exception("Timeout")
+    except pexpect.EOF:
+        raise Exception("EOF")
 
 command = ['crawl']
 
@@ -53,7 +53,7 @@ extra_options = dict(
                 explore_delay="-1",
                 explore_greedy="true",
                 note_all_skill_levels="true",
-                runrest_ignore_monster=".*:3",
+                runrest_ignore_monster=".*:2",
                 show_more='false',
                 show_newturn_mark='false',
                 trapwalk_safe_hp="'dart:15, needle:25, spear:50'",
@@ -127,30 +127,34 @@ while True:
         info(state.upper())
 
         if state is dumpin:
+            reset()
+
             # Check for burden
             # Drop useless crap
 
             # Drop all corpses: d&(enter)
-            child.send("d&")
+            child.send("d&%")
             enter()
+            if expect(child, "Drop what"):
+                # Nothing to drop.
+                info("No corpses to drop.")
             reset()
 
-            # Butcher all corpses: c until "There isn't anything to butcher here"
+            # Butcher all corpses.
             while not expect(child, ["There isn't anything to butcher here",
-                                     "There isn't anything here",
-                                     ]):
+                                    "There isn't anything here",
+                                    ]):
                 info("Butchering corpse.")
                 child.send("c")
 
             # Check for hunger
-            redraw()
             result = expect(child, ["Starving", "Hungry"])
             if result:
                 # Starving, Near Starving, Very Hungry, Hungry
                 child.send('e')
                 foodresult = expect(child, "Comestables")
                 if expect(child, "Comestables"):
-                    if result is 1:
+                    if foodresult is 1:
                         # Starving, so eat our permafood.
                         # It should still be on the floor.
                         pass
@@ -167,7 +171,9 @@ while True:
             # items in our inventory.
 
             # No more inventory business, so go back to exploring.
+            reset()
             state = explorin
+            continue
 
         elif state is fightin:
             # HOLY CRAP ENEMIES
@@ -320,6 +326,9 @@ while True:
                 state = dumpin
                 continue
 
-    except KeyboardInterrupt, Exception:
+    except (KeyboardInterrupt, Exception):
         # Interactive mode if ctrl+c. ctrl+] to give back control.
-        child.interact()
+        try:
+            child.interact()
+        except:
+            import pdb; pdb.set_trace()
