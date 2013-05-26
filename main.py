@@ -24,19 +24,26 @@ def random_name(length=8):
     return name.title()
 
 def expect(c, pattern, timeout=0.1):
+    '''If any pattern matches, return its index.
+    If it has capturing groups, return (index, matches) instead.
+    If it timed out, return False.
+    If it got an EOF, raise an exception.
+    '''
     try:
         result = c.expect(pattern, timeout)
+        if c.match.groups():
+            return (result+1, c.match.groups())
         return result+1
     except pexpect.TIMEOUT:
         return False
     except pexpect.EOF:
-        raise Exception("EOF")
+        raise
 
 command = ['crawl']
 
 options = dict(name=random_name(),
-               species='Human',
-               background='fighter',
+               species='Felid',
+               background='Berserker',
                )
 
 extra_options = dict(
@@ -88,13 +95,14 @@ def reset():
     # Clear any commands that got half-baked.
     count = 0
     while True:
+        escape()
+        redraw()
         if expect(child, "Unknown command"):
             # Back to the top
             break
         else:
             count += 1
             info("Trying to clear commands.")
-            child.send(chr(27)) # Escape
             if count > 10:
                 # Hung up on that damn stat pick line
                 child.send("s")
@@ -112,66 +120,108 @@ dumpin = "dumpin"
 
 enter = partial(child.sendcontrol, "m")
 tab = partial(child.sendcontrol, "i")
+escape = partial(child.sendcontrol, "[")
+
+# import ANSI
+# term = ANSI.ANSI()
 
 state = fightin
 while True:
     try:
-        # Make sure we redraw the display.
-        redraw()
-
+        time.sleep(1)
         # Reset our input back to a known state.
         reset()
 
+        # Make sure we redraw the display.
+        redraw()
+
+
         # TODO: Check if we've spent too much time here, (1400-117*depth)
+
+        # height, width = child.getwinsize()
+        # screentext = ""
+        # import signal
+
+        # donereading = False
+        # def handler(x, y):
+            # info("done reading")
+            # donereading = True
+            # signal.alarm(0)
+
+            # import terminal
+            # screentext_plain = terminal.StripAnsiText(screentext)
+            # info(str(screentext_plain))
+
+        # signal.signal(signal.SIGALRM, handler)
+        # while not donereading:
+            # signal.alarm(1)
+            # info("read")
+            # screentext += child.read(1)
 
         info(state.upper())
 
         if state is dumpin:
-            reset()
 
             # Check for burden
             # Drop useless crap
 
             # Drop all corpses: d&(enter)
-            child.send("d&%")
-            enter()
-            if expect(child, "Drop what"):
-                # Nothing to drop.
-                info("No corpses to drop.")
+            reset()
+            child.send("d")
+            result = expect(child, ["Burden", ])
+            if result in (1,):
+                # Drop all the carrion
+                child.send("&")
+                if expect(child, "turn"):
+                    enter()
+            else:
+                info("No carrion to drop.")
             reset()
 
             # Butcher all corpses.
-            while not expect(child, ["There isn't anything to butcher here",
-                                    "There isn't anything here",
-                                    ]):
-                info("Butchering corpse.")
-                child.send("c")
+            while True:
+                if expect(child, ["There isn't anything to butcher here",
+                                  "There isn't anything here",
+                                  ]):
+                    info("Breaking out of butcher loop.")
+                    break
+                else:
+                    info("Butchering corpse.")
+                    child.send("c")
+                    if expect(child, "If you dropped the corpse"):
+                        child.send("d")
+                        if expect(child, "turn"):
+                            enter()
+                        else:
+                            reset()
+                        continue
 
             # Check for hunger
             result = expect(child, ["Starving", "Hungry"])
             if result:
-                # Starving, Near Starving, Very Hungry, Hungry
-                child.send('e')
-                foodresult = expect(child, "Comestables")
-                if expect(child, "Comestables"):
-                    if foodresult is 1:
-                        # Starving, so eat our permafood.
-                        # It should still be on the floor.
-                        pass
-                else:
-                    child.send('y')
+                # Drop all our comestables to make eating easier
+                child.send("d")
+                if expect(child, ["Burden:", "Comestables", ]):
+                    child.send("%")
+                    enter()
+                    reset()
 
-            # Gather any food items laying around.
-            child.send(",m%")
-            enter()
+                    # Eat something on the floor
+                    child.send('e')
+                    if expect(child, "Eat a"):
+                        child.send('y')
+                        if expect(child, "You finish eating"):
+                            # Pick up all our food.
+                            child.send('ga')
 
             # If have more than 3 of one scroll,
             # And we don't know what identify scrolls are yet,
             # It's probably identify, so use it on the most interesting
             # items in our inventory.
 
-            # No more inventory business, so go back to exploring.
-            reset()
+            # No more inventory business,
+            # so go back to looting to make sure we pick up anything
+            # that's laying around.
             state = explorin
             continue
 
@@ -326,7 +376,7 @@ while True:
                 state = dumpin
                 continue
 
-    except (KeyboardInterrupt, Exception):
+    except (KeyboardInterrupt, pexpect.EOF):
         # Interactive mode if ctrl+c. ctrl+] to give back control.
         try:
             child.interact()
